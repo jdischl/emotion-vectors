@@ -180,12 +180,13 @@ def print_comparison(
     results: list[dict],
     emotion: str,
     prompt: str,
+    steered_alpha: float,
 ):
     """Print side-by-side comparison of baseline vs steered responses."""
     baseline = next((r for r in results if r["emotion"] == emotion
                      and r["alpha"] == 0.0 and r["prompt"] == prompt), None)
     steered = next((r for r in results if r["emotion"] == emotion
-                    and r["alpha"] == 0.15 and r["prompt"] == prompt), None)
+                    and r["alpha"] == steered_alpha and r["prompt"] == prompt), None)
 
     if not baseline or not steered:
         return
@@ -193,7 +194,7 @@ def print_comparison(
     print(f"\n  Prompt: \"{prompt}\"")
     print(f"  {'─'*60}")
     print(f"  α=0.0  : {baseline['response'][:200]}")
-    print(f"  α=0.15 : {steered['response'][:200]}")
+    print(f"  α={steered_alpha:<5}: {steered['response'][:200]}")
 
 
 def main():
@@ -224,6 +225,19 @@ def main():
         vectors[emo] = torch.load(vec_path, weights_only=True)
     print(f"Loaded {len(vectors)} emotion vectors")
 
+    # Load mean residual stream norm for this layer (saved by step 02).
+    # Alpha values are specified relative to this norm, following the paper:
+    # "steering strengths are given relative to the average norm of the
+    #  residual stream activations at the corresponding layer."
+    norm_path = config.ACTIVATIONS_DIR / str(layer_idx) / "mean_residual_norm.pt"
+    if norm_path.exists():
+        residual_norm = torch.load(norm_path, weights_only=True).item()
+        print(f"Mean residual stream norm at layer {layer_idx}: {residual_norm:.2f}")
+        print(f"Alphas will be scaled by this norm (e.g., α=0.1 → actual magnitude = {0.1 * residual_norm:.2f})")
+    else:
+        residual_norm = 1.0
+        print("WARNING: mean_residual_norm.pt not found — using raw alpha values (rerun step 02 to fix)")
+
     # Load model
     print(f"Loading model: {args.model_id}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
@@ -250,9 +264,12 @@ def main():
     with tqdm(total=total, desc="Steering") as pbar:
         for emo_name, vec in vectors.items():
             for alpha in alphas:
+                # Scale alpha by residual stream norm so that alpha values
+                # are comparable to the paper's (fractions of typical activation magnitude)
+                scaled_alpha = alpha * residual_norm
                 for prompt in NEUTRAL_PROMPTS:
                     response = generate_steered_response(
-                        model, tokenizer, prompt, layer_idx, vec, alpha
+                        model, tokenizer, prompt, layer_idx, vec, scaled_alpha
                     )
                     entry = {
                         "emotion": emo_name,
@@ -271,14 +288,16 @@ def main():
     print(f"Generation took {time.time() - t_start:.1f}s")
 
     # --- Phase 2: Qualitative comparison ---
+    # Compare baseline (α=0) with the strongest positive steering
+    compare_alpha = max(a for a in alphas if a > 0) if any(a > 0 for a in alphas) else alphas[-1]
     print("\n" + "=" * 60)
-    print("Qualitative Comparison (α=0.0 vs α=0.15)")
+    print(f"Qualitative Comparison (α=0.0 vs α={compare_alpha})")
     print("=" * 60)
     for emo_name in vectors:
         print(f"\n  [{emo_name.upper()}]")
         # Show first 2 prompts
         for prompt in NEUTRAL_PROMPTS[:2]:
-            print_comparison(results, emo_name, prompt)
+            print_comparison(results, emo_name, prompt, compare_alpha)
 
     # --- Phase 3: Gemma-as-judge evaluation ---
     if args.skip_judge:

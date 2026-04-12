@@ -30,6 +30,23 @@ Large language models develop internal representations of concepts, including em
 - **Approach**: Mean-difference vectors only (no SAE training — no SAEs exist for Gemma 4)
 - **Framework**: Direct PyTorch hooks on HuggingFace `transformers` (no TransformerLens)
 
+### Baseline subtraction: adapting the paper's approach to 10 emotions
+
+The Anthropic paper computes emotion vectors by subtracting the **grand mean** (the average activation across all 171 emotions) from each emotion's mean activation. This isolates what makes each emotion *distinctive from other emotions*, rather than what makes it distinctive from emotionlessness.
+
+Naively replicating this with only 10 emotions introduces a problem: 7 of our 10 emotions are negative-valence (angry, afraid, sad, disgusted, anxious, hostile, frustrated), which skews the grand mean toward negative affect. Subtracting that skewed mean would bake a positive-valence bias into every vector, contaminating the directions we extract.
+
+A simple neutral-baseline subtraction (`emotion_mean - neutral_mean`) avoids the skew but captures a different signal — it conflates emotion-specific information with shared "emotionality" (variance common to all emotions versus neutral text).
+
+We address this with a **two-step subtraction**:
+
+1. Compute the grand mean across all 10 emotion activation means
+2. Compute each raw vector as `emotion_mean - grand_mean` (the paper's approach)
+3. Compute the shared emotionality direction: `grand_mean - neutral_mean`
+4. Project out that shared direction from each vector
+
+Step 2 isolates what is unique to each emotion relative to the average emotion. Step 4 removes the residual shared "emotional vs. neutral" axis that is poorly estimated with a small, valence-imbalanced emotion set. Together, this approximates the paper's 171-emotion grand mean subtraction without requiring 171 emotions, because we explicitly remove the contaminated axis rather than relying on a balanced set to average it out.
+
 ### Emotion vocabulary
 
 ```
