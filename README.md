@@ -18,10 +18,10 @@ Large language models develop internal representations of concepts, including em
 | Step | Script | What it does |
 |------|--------|-------------|
 | 1 | `01_generate_stories.py` | Prompt Gemma 4 to write short stories depicting each emotion |
-| 2 | `02_extract_activations.py` | Run stories through the model, capture residual-stream activations at target layers |
-| 3 | `03_compute_vectors.py` | Compute mean-difference vectors: avg(emotion) − avg(neutral), normalised to unit length |
+| 2 | `02_extract_activations.py` | Run stories through the model, capture mean residual-stream activations (token 50 onward) at target layers |
+| 3 | `03_compute_vectors.py` | Grand-mean subtraction, PCA confound removal, emotionality projection, unit normalisation |
 | 4 | `04_validate_probes.py` | Train linear probes (logistic regression) to classify emotions from activations |
-| 5 | `05_steer_and_eval.py` | Add emotion vectors to the residual stream during generation, evaluate with Gemma-as-judge |
+| 5 | `05_steer_and_eval.py` | Add norm-scaled emotion vectors to the residual stream during generation, evaluate with Gemma-as-judge |
 
 ### Key adaptations from the Anthropic paper
 
@@ -30,7 +30,21 @@ Large language models develop internal representations of concepts, including em
 - **Approach**: Mean-difference vectors only (no SAE training — no SAEs exist for Gemma 4)
 - **Framework**: Direct PyTorch hooks on HuggingFace `transformers` (no TransformerLens)
 
-### Baseline subtraction: adapting the paper's approach to 10 emotions
+### Activation extraction
+
+We feed each story as raw text (no chat template) through the model and capture residual-stream hidden states at three target layers. Following the paper (section 2.2), activations are **averaged across all token positions from position 50 onward** — skipping early tokens where the model hasn't yet processed enough emotional context. This captures the emotional content distributed across the full story rather than relying on a single position.
+
+### Vector computation: denoising pipeline
+
+The vector computation follows the paper's methodology with an additional correction for our small emotion set:
+
+1. **Per-emotion means** — average the mean-across-token activations over all stories for each emotion
+2. **Grand-mean subtraction** — subtract the mean-of-emotion-means from each emotion mean (paper section 2.3). This isolates what makes each emotion *distinctive from the average emotion*
+3. **PCA confound removal** — fit PCA on neutral-story activations, project out the top components explaining 50% of variance (paper section 2.3). This removes writing-style, topic, and narrative structure confounds
+4. **Emotionality direction projection** — project out the `grand_mean - neutral_mean` direction (see below)
+5. **Unit normalisation**
+
+### Adapting grand-mean subtraction to 10 emotions
 
 The Anthropic paper computes emotion vectors by subtracting the **grand mean** (the average activation across all 171 emotions) from each emotion's mean activation. This isolates what makes each emotion *distinctive from other emotions*, rather than what makes it distinctive from emotionlessness.
 
@@ -60,6 +74,10 @@ Selected for clear behavioural signatures and maximum separation — these produ
 We capture activations at **global attention layers** near 25%, 50%, and 75% depth. Gemma 4 uses hybrid attention (sliding window + full global every 6 layers). Global attention layers have richer contextualised representations since they attend to the full sequence.
 
 For the 31B model (60 layers): layers **17, 29, 47**.
+
+### Steering normalisation
+
+Following the paper (section 4), steering strengths (alpha values) are specified **relative to the mean norm of residual-stream activations** at the target layer. During activation extraction, we compute and save the mean residual-stream norm per layer. The steering script loads this norm and scales alpha accordingly, so `alpha=0.1` means "add 10% of the typical activation magnitude in this direction." This makes alpha values interpretable and comparable across models and layers.
 
 ## Setup (RunPod)
 
