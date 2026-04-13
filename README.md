@@ -40,7 +40,7 @@ The vector computation follows the paper's methodology with an additional correc
 
 1. **Per-emotion means** — average the mean-across-token activations over all stories for each emotion
 2. **Grand-mean subtraction** — subtract the mean-of-emotion-means from each emotion mean (paper section 2.3). This isolates what makes each emotion *distinctive from the average emotion*
-3. **PCA confound removal** — fit PCA on neutral-story activations, project out the top components explaining 50% of variance (paper section 2.3). This removes writing-style, topic, and narrative structure confounds
+3. **PCA confound removal** — fit PCA on neutral-story activations, project out the top components explaining 50% of variance from the vectors (paper section 2.3). This removes writing-style, topic, and narrative structure confounds
 4. **Emotionality direction projection** — project out the `grand_mean - neutral_mean` direction (see below)
 5. **Unit normalisation**
 

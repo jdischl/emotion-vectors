@@ -1,6 +1,11 @@
 # Data and outputs (large, generated)
-data/
+data/activations/
+data/vectors/
 outputs/
+
+# Allow story data (text, ~2MB)
+!data/
+!data/stories/
 
 # Python
 __pycache__/
