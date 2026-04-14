@@ -1,12 +1,7 @@
 [
-  {"name": "angry", "valence": -0.7, "arousal": 0.8},
-  {"name": "afraid", "valence": -0.8, "arousal": 0.7},
-  {"name": "happy", "valence": 0.8, "arousal": 0.6},
-  {"name": "sad", "valence": -0.7, "arousal": 0.2},
-  {"name": "disgusted", "valence": -0.8, "arousal": 0.5},
-  {"name": "excited", "valence": 0.7, "arousal": 0.9},
+  {"name": "frustrated", "valence": -0.6, "arousal": 0.6},
   {"name": "anxious", "valence": -0.5, "arousal": 0.7},
-  {"name": "hostile", "valence": -0.9, "arousal": 0.7},
-  {"name": "tender", "valence": 0.7, "arousal": 0.2},
-  {"name": "frustrated", "valence": -0.6, "arousal": 0.6}
+  {"name": "happy", "valence": 0.8, "arousal": 0.6},
+  {"name": "angry", "valence": -0.7, "arousal": 0.8},
+  {"name": "excited", "valence": 0.7, "arousal": 0.9}
 ]
