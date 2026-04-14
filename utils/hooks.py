@@ -18,6 +18,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+import config as _config
+
 
 class ActivationCapture:
     """Capture residual-stream activations at specified layers during a forward pass.
@@ -39,7 +41,7 @@ class ActivationCapture:
 
     def __enter__(self) -> "ActivationCapture":
         self._activations.clear()
-        layers = self.model.model.layers
+        layers = _config.get_decoder_layers(self.model)
 
         for idx in self.layer_indices:
             # Closure over idx so each hook writes to the right key
@@ -100,7 +102,7 @@ class SteeringHook:
         self._hook = None
 
     def __enter__(self) -> "SteeringHook":
-        layer = self.model.model.layers[self.layer_idx]
+        layer = _config.get_decoder_layers(self.model)[self.layer_idx]
         vec = self.vector.to(
             device=next(layer.parameters()).device,
             dtype=next(layer.parameters()).dtype,

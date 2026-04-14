@@ -153,7 +153,8 @@ def main():
         out_path = config.STORIES_DIR / f"{name}.jsonl"
 
         if out_path.exists():
-            existing = sum(1 for _ in open(out_path))
+            with open(out_path) as f:
+                existing = sum(1 for _ in f)
             if existing >= total_per_emotion:
                 print(f"  {name}: {existing} stories already exist, skipping")
                 continue
@@ -180,7 +181,11 @@ def main():
 
     # Generate neutral dialogues
     neutral_path = config.STORIES_DIR / "neutral.jsonl"
-    if neutral_path.exists() and sum(1 for _ in open(neutral_path)) >= num_neutral:
+    _n_neutral = 0
+    if neutral_path.exists():
+        with open(neutral_path) as f:
+            _n_neutral = sum(1 for _ in f)
+    if _n_neutral >= num_neutral:
         print(f"  neutral: dialogues already exist, skipping")
     else:
         print("  Generating neutral dialogues...")

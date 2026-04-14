@@ -53,6 +53,38 @@ def get_text_config(model_or_config):
     return getattr(cfg, "text_config", cfg)
 
 
+def get_decoder_layers(model):
+    """Return the transformer decoder layer list for any model.
+
+    Tries common HuggingFace model structures in order:
+      1. model.model.layers          — standard causal LM (Llama, Gemma 1-3, ...)
+      2. model.language_model.model.layers — multimodal models (PaliGemma, Gemma 4, ...)
+      3. model.model.language_model.model.layers — another multimodal variant
+      4. model.transformer.h         — GPT-2 style
+
+    Raises a descriptive AttributeError if none match, listing the model's
+    top-level attributes so the caller can diagnose the right path.
+    """
+    candidates = [
+        lambda m: m.model.layers,
+        lambda m: m.language_model.model.layers,
+        lambda m: m.model.language_model.model.layers,
+        lambda m: m.transformer.h,
+    ]
+    for fn in candidates:
+        try:
+            layers = fn(model)
+            if layers is not None:
+                return layers
+        except AttributeError:
+            continue
+    top_attrs = [a for a in dir(model) if not a.startswith("_")]
+    raise AttributeError(
+        f"Cannot locate transformer decoder layers for {type(model).__name__}. "
+        f"Top-level attributes: {top_attrs}"
+    )
+
+
 def get_target_layers(model) -> list[int]:
     """Return layer indices for activation capture, snapped to global attention layers.
 
@@ -64,7 +96,7 @@ def get_target_layers(model) -> list[int]:
     if hasattr(text_cfg, "num_hidden_layers"):
         n_layers = text_cfg.num_hidden_layers
     else:
-        n_layers = len(model.model.layers)
+        n_layers = len(get_decoder_layers(model))
 
     # Build set of global attention layer indices
     global_layers = [i for i in range(n_layers) if i % _GLOBAL_ATTENTION_STRIDE == _GLOBAL_ATTENTION_STRIDE - 1]
