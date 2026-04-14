@@ -42,6 +42,17 @@ TARGET_LAYER_PERCENTAGES = [0.25, 0.50, 0.75]
 _GLOBAL_ATTENTION_STRIDE = 6
 
 
+def get_text_config(model_or_config):
+    """Return the text component config for any model.
+
+    Gemma 4 is a multimodal model; its text-tower config lives at
+    ``model.config.text_config``.  All other models expose attributes
+    directly on ``model.config``.  This helper normalises both cases.
+    """
+    cfg = getattr(model_or_config, "config", model_or_config)
+    return getattr(cfg, "text_config", cfg)
+
+
 def get_target_layers(model) -> list[int]:
     """Return layer indices for activation capture, snapped to global attention layers.
 
@@ -49,12 +60,9 @@ def get_target_layers(model) -> list[int]:
     raw 25%/50%/75% positions, and rounds each to the nearest layer whose
     index satisfies  idx % 6 == 5  (the global-attention positions in Gemma 4).
     """
-    # Gemma 4 is a multimodal model whose text config may be nested under
-    # model.config.text_config.  Fall back to counting the actual layers if
-    # the attribute is absent from the top-level config.
-    cfg = getattr(model.config, "text_config", model.config)
-    if hasattr(cfg, "num_hidden_layers"):
-        n_layers = cfg.num_hidden_layers
+    text_cfg = get_text_config(model)
+    if hasattr(text_cfg, "num_hidden_layers"):
+        n_layers = text_cfg.num_hidden_layers
     else:
         n_layers = len(model.model.layers)
 

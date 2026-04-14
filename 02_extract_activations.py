@@ -202,7 +202,7 @@ def main():
 
     layer_indices = args.layers or config.get_target_layers(model)
     print(f"Target layers: {layer_indices}")
-    print(f"Hidden dim:    {model.config.hidden_size}")
+    print(f"Hidden dim:    {config.get_text_config(model).hidden_size}")
     print()
 
     # Create output dirs for each layer
