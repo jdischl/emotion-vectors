@@ -49,7 +49,14 @@ def get_target_layers(model) -> list[int]:
     raw 25%/50%/75% positions, and rounds each to the nearest layer whose
     index satisfies  idx % 6 == 5  (the global-attention positions in Gemma 4).
     """
-    n_layers = model.config.num_hidden_layers
+    # Gemma 4 is a multimodal model whose text config may be nested under
+    # model.config.text_config.  Fall back to counting the actual layers if
+    # the attribute is absent from the top-level config.
+    cfg = getattr(model.config, "text_config", model.config)
+    if hasattr(cfg, "num_hidden_layers"):
+        n_layers = cfg.num_hidden_layers
+    else:
+        n_layers = len(model.model.layers)
 
     # Build set of global attention layer indices
     global_layers = [i for i in range(n_layers) if i % _GLOBAL_ATTENTION_STRIDE == _GLOBAL_ATTENTION_STRIDE - 1]
