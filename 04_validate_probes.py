@@ -89,7 +89,6 @@ def train_multinomial_probe(
     print(f"  Train: {X_train.shape[0]} samples, Test: {X_test.shape[0]} samples")
 
     clf = LogisticRegression(
-        multi_class="multinomial",
         max_iter=1000,
         C=1.0,
         solver="lbfgs",
