@@ -66,10 +66,12 @@ def get_decoder_layers(model):
     top-level attributes so the caller can diagnose the right path.
     """
     candidates = [
-        lambda m: m.model.layers,
-        lambda m: m.language_model.model.layers,
-        lambda m: m.model.language_model.model.layers,
-        lambda m: m.transformer.h,
+        lambda m: m.model.layers,                        # standard causal LM
+        lambda m: m.model.language_model.layers,         # Gemma4ForConditionalGeneration
+        lambda m: m.language_model.model.layers,         # PaliGemma / LLaVA
+        lambda m: m.model.language_model.model.layers,   # other multimodal variants
+        lambda m: m.model.text_model.layers,             # BLIP-style
+        lambda m: m.transformer.h,                       # GPT-2
     ]
     for fn in candidates:
         try:
