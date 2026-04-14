@@ -23,8 +23,8 @@ EMOTIONS_PATH = PROJECT_ROOT / "emotions.json"
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
-MODEL_ID = "google/gemma-4-31B-it"
-FALLBACK_MODEL_ID = "google/gemma-4-E4B-it"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+FALLBACK_MODEL_ID = "NousResearch/Meta-Llama-3.1-8B-Instruct"  # ungated mirror
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16
 
@@ -32,14 +32,15 @@ DTYPE = torch.bfloat16
 # Layer targeting
 # ---------------------------------------------------------------------------
 # We sample the residual stream at 25%, 50%, and 75% depth.
-# For Gemma 4's hybrid attention, we snap to the nearest *global* attention
-# layer (full attention every 6 layers, at indices where idx % 6 == 5) so
-# that captured activations reflect the full context window.
+# For Llama 3.1 8B (32 layers, all global attention): layers 8, 16, 24.
 TARGET_LAYER_PERCENTAGES = [0.25, 0.50, 0.75]
 
-# Gemma 4 places global (full) attention at every 6th layer.  The pattern
-# for a 60-layer model is: 5, 11, 17, 23, 29, 35, 41, 47, 53, 59.
-_GLOBAL_ATTENTION_STRIDE = 6
+# Models with hybrid attention (e.g. Gemma 4) place global attention at
+# every Nth layer; we snap targets to these layers.  For models with
+# uniform global attention (Llama, Mistral), stride=1 means no snapping.
+_HYBRID_ATTENTION_STRIDES = {
+    "gemma4": 6,
+}
 
 
 def get_text_config(model_or_config):
@@ -88,11 +89,11 @@ def get_decoder_layers(model):
 
 
 def get_target_layers(model) -> list[int]:
-    """Return layer indices for activation capture, snapped to global attention layers.
+    """Return layer indices for activation capture at 25%, 50%, 75% depth.
 
-    The function reads num_hidden_layers from the model config, computes the
-    raw 25%/50%/75% positions, and rounds each to the nearest layer whose
-    index satisfies  idx % 6 == 5  (the global-attention positions in Gemma 4).
+    For models with hybrid attention (e.g. Gemma 4), snaps to the nearest
+    global-attention layer.  For models with uniform attention (Llama,
+    Mistral), returns the raw percentage positions directly.
     """
     text_cfg = get_text_config(model)
     if hasattr(text_cfg, "num_hidden_layers"):
@@ -100,15 +101,21 @@ def get_target_layers(model) -> list[int]:
     else:
         n_layers = len(get_decoder_layers(model))
 
-    # Build set of global attention layer indices
-    global_layers = [i for i in range(n_layers) if i % _GLOBAL_ATTENTION_STRIDE == _GLOBAL_ATTENTION_STRIDE - 1]
+    # Determine attention stride: hybrid models have stride > 1
+    model_type = getattr(text_cfg, "model_type", "")
+    stride = _HYBRID_ATTENTION_STRIDES.get(model_type, 1)
 
-    targets = []
-    for pct in TARGET_LAYER_PERCENTAGES:
-        raw = int(n_layers * pct)
-        # Snap to nearest global attention layer
-        best = min(global_layers, key=lambda gl: abs(gl - raw))
-        targets.append(best)
+    if stride > 1:
+        # Snap to global attention layers (e.g. Gemma 4: every 6th layer)
+        global_layers = [i for i in range(n_layers) if i % stride == stride - 1]
+        targets = []
+        for pct in TARGET_LAYER_PERCENTAGES:
+            raw = int(n_layers * pct)
+            best = min(global_layers, key=lambda gl: abs(gl - raw))
+            targets.append(best)
+    else:
+        # All layers are equivalent — use raw percentages
+        targets = [int(n_layers * pct) for pct in TARGET_LAYER_PERCENTAGES]
 
     # Deduplicate while preserving order (possible for very small models)
     seen = set()
