@@ -195,7 +195,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        torch_dtype=config.DTYPE,
+        dtype=config.DTYPE,
         device_map="auto",
     )
     model.eval()

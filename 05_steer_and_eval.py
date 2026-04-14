@@ -246,7 +246,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        torch_dtype=config.DTYPE,
+        dtype=config.DTYPE,
         device_map="auto",
     )
     model.eval()
@@ -319,7 +319,7 @@ def main():
             judge_tokenizer.pad_token = judge_tokenizer.eos_token
         judge_model = AutoModelForCausalLM.from_pretrained(
             args.judge_model,
-            torch_dtype=config.DTYPE,
+            dtype=config.DTYPE,
             device_map="auto",
         )
         judge_model.eval()
