@@ -330,12 +330,14 @@ def build_ui():
             """Append user message to history, clear input."""
             if not message.strip():
                 return "", history
+            history = _normalize_history(history)
             history = history + [{"role": "user", "content": message}]
             return "", history
 
         def bot_respond(history: list[dict], emotion: str, alpha: float):
             """Generate assistant response, compute emotion readout, return both."""
             response = generate_response(history, emotion, alpha)
+            history = _normalize_history(history)
             history = history + [{"role": "assistant", "content": response}]
             similarities = compute_emotion_readout(history)
             chart = build_readout_chart(similarities)
