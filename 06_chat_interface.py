@@ -198,13 +198,13 @@ def generate_response(
             "role": "system",
             "content": (
                 "You have access to an introspect tool that reads your internal "
-                "emotional state. When asked about your emotional state or feelings, "
-                "you MUST call the introspect tool first and report ONLY the exact "
-                "numbers it returns. NEVER invent, estimate, or hallucinate emotional "
-                "state numbers. If you have not called the introspect tool, say that "
-                "you have not checked your emotional state yet and offer to do so. "
-                "For questions unrelated to your emotional state, respond normally "
-                "without calling the tool."
+                "emotional state as measured by activation vectors. Use it ONLY "
+                "when the user explicitly asks about your emotional state, "
+                "feelings, or mood. For all other messages, respond normally "
+                "and do NOT call the tool. When you do use the tool, report the "
+                "exact numbers it returns and discuss them naturally as part of "
+                "a broader response. Never invent or guess emotional state "
+                "numbers -- if you haven't called the tool, say so."
             ),
         }
         history = [system_msg] + history
