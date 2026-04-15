@@ -58,8 +58,15 @@ Replicate Part 1 of Anthropic's "Emotion Concepts and their Function in a Large 
   export HF_HUB_CACHE=/root/hf_cache
   export HF_HUB_DISABLE_XET=1
   ```
-- Repo cloned at `/` on the pod (not `/workspace/` — NFS has block write quota of 0)
+- Repo cloned at `/emotion-vectors` on the pod (not `/workspace/` — NFS has block write quota of 0)
 - Use container disk, NOT workspace NFS for any data
+- **Always run long jobs in tmux** to survive disconnects:
+  ```bash
+  tmux new -s emo          # start session
+  # run your pipeline commands here
+  # Ctrl-B then D to detach
+  tmux attach -t emo       # reattach after reconnect
+  ```
 
 ## Key Architecture Decisions
 - `config.get_text_config(model)` — resolves nested text config for multimodal models; falls through for Llama
