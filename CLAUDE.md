@@ -10,11 +10,21 @@ Replicate Part 1 of Anthropic's "Emotion Concepts and their Function in a Large 
 - ~16GB in bf16 — fits on cheaper GPUs (A40, L40, or even 24GB consumer cards)
 - Generation-based extraction (model writes its own stories) produces better results — fast/cheap with 8B
 
-## Current Status (2026-04-14)
-- Model switch from Gemma 4 31B to Llama 3.1 8B just completed
-- All pipeline scripts updated and ready
-- Need to regenerate ALL data with Llama (stories, activations, vectors, probes)
-- Step 5 (steering) not yet run
+## Current Status (2026-04-15)
+- Model switch from Gemma 4 31B to Llama 3.1 8B complete
+- Methodology aligned with Jeong (2026) replication studies
+- Old Gemma 4 data removed from git (`.gitignore` now covers all `data/` and `outputs/`)
+- Step 1 (story generation) running on pod with Llama — check if complete
+- Steps 2-5 still need to run with Llama-generated data
+- Step 5 (steering) has never been run with any model yet
+
+## Methodology (Jeong 2026 alignment)
+- **Layer selection**: 37.5% depth optimal for Llama 3.1 8B (layer 12 of 32)
+- **Steering**: all layers simultaneously, NOT single layer (avoids text degradation)
+- **Alpha range**: 0.005–0.05 (10-40× lower than naive single-layer approach)
+- **PCA denoising**: our addition (Anthropic-style), not in Jeong — run with and without (`--no-denoise`) to compare
+- **Generation-based extraction**: statistically superior to comprehension-based (p=0.007)
+- **Reference papers**: arXiv:2604.04064, arXiv:2604.11050
 
 ## 5 Emotions (chosen for behavioral relevance)
 - **frustrated** — hallucination/shortcut risk
