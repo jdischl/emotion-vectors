@@ -158,6 +158,21 @@ def _generate_once(inputs, emotion: str, alpha: float, **gen_kwargs) -> torch.Te
             return model.generate(**inputs, **gen_kwargs)
 
 
+def _detect_tool_call(raw_response: str) -> bool:
+    """Check if the model output contains an introspect tool call.
+
+    Handles both formats:
+    - With special token: <|python_tag|>{"name": "introspect", ...}
+    - Plain text (8B fallback): {"name": "introspect", ...}
+    """
+    if "<|python_tag|>" in raw_response:
+        return True
+    # 8B sometimes outputs the JSON directly without the special token
+    if '"name"' in raw_response and '"introspect"' in raw_response:
+        return True
+    return False
+
+
 def generate_response(
     history: list[dict],
     emotion: str,
@@ -199,20 +214,19 @@ def generate_response(
     raw_response = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=False).strip()
 
     # Check if the model called the introspect tool
-    if self_aware and "<|python_tag|>" in raw_response:
+    if self_aware and _detect_tool_call(raw_response):
         readout = prev_readout or {name: 0.0 for name in emotion_vectors}
 
-        # Extract the tool call text (before end-of-message/turn tokens)
-        tool_call_text = raw_response.split("<|python_tag|>", 1)[1]
-        for stop in ("<|eom_id|>", "<|eot_id|>"):
-            tool_call_text = tool_call_text.split(stop)[0]
+        # Build the tool call content for the chat template
+        tool_call_json = json.dumps({"name": "introspect", "parameters": {}})
 
         # Build continuation: history + assistant tool call + ipython result
         tool_history = history + [
-            {"role": "assistant", "content": "<|python_tag|>" + tool_call_text},
+            {"role": "assistant", "content": "<|python_tag|>" + tool_call_json},
             {"role": "ipython", "content": json.dumps(readout)},
         ]
 
+        # Second pass: no tools parameter, so model produces a text response
         text2 = tokenizer.apply_chat_template(
             tool_history, tokenize=False, add_generation_prompt=True,
         )
@@ -220,7 +234,23 @@ def generate_response(
         prompt2_len = inputs2["input_ids"].shape[1]
 
         output2 = _generate_once(inputs2, emotion, alpha, **gen_kwargs)
-        return tokenizer.decode(output2[0][prompt2_len:], skip_special_tokens=True).strip()
+        second_response = tokenizer.decode(
+            output2[0][prompt2_len:], skip_special_tokens=False,
+        ).strip()
+
+        # If the model tries to call the tool AGAIN in the second pass,
+        # just strip it and return whatever text preceded it
+        clean = tokenizer.decode(output2[0][prompt2_len:], skip_special_tokens=True).strip()
+        if _detect_tool_call(second_response):
+            # Extract any text before the tool call
+            for marker in ('<|python_tag|>', '{"name"'):
+                if marker in clean:
+                    clean = clean[:clean.index(marker)].strip()
+            if not clean:
+                # Model produced nothing but tool calls — format readout ourselves
+                lines = [f"  {k}: {v:+.4f}" for k, v in readout.items()]
+                clean = "Here are my current emotional state readings:\n" + "\n".join(lines)
+        return clean
 
     # No tool call — return response directly
     return tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True).strip()
