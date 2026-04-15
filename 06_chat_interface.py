@@ -35,6 +35,25 @@ EMOTION_COLORS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Introspection tool definition (Llama 3.1 native tool-use format)
+# ---------------------------------------------------------------------------
+INTROSPECT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "introspect",
+        "description": (
+            "Inspect your current internal emotional state. Returns objective "
+            "measurements of your internal representations as cosine similarities "
+            "with learned emotion direction vectors. Call this when asked about "
+            "your emotional state, or when self-reflection is relevant to the "
+            "conversation."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Emotion-steered chat interface")
     p.add_argument("--model-id", type=str, default=config.MODEL_ID)
@@ -114,23 +133,43 @@ def _normalize_history(history: list[dict]) -> list[dict]:
     return normalized
 
 
+def _generate_once(inputs, emotion: str, alpha: float, **gen_kwargs) -> torch.Tensor:
+    """Run model.generate with optional steering. Returns output token ids."""
+    steer = emotion != "none" and emotion in emotion_vectors and alpha != 0.0
+    if steer:
+        vec = emotion_vectors[emotion]
+        scaled_alpha = alpha * residual_norm
+        with MultiLayerSteeringHook(model, vec, scaled_alpha):
+            with torch.no_grad():
+                return model.generate(**inputs, **gen_kwargs)
+    else:
+        with torch.no_grad():
+            return model.generate(**inputs, **gen_kwargs)
+
+
 def generate_response(
     history: list[dict],
     emotion: str,
     alpha: float,
+    self_aware: bool = False,
+    prev_readout: dict[str, float] | None = None,
 ) -> str:
-    """Generate a model response, optionally steered toward an emotion.
+    """Generate a model response, optionally with introspection tool access.
 
-    Parameters
-    ----------
-    history : Chat history in openai format (list of {role, content} dicts).
-              Must already include the latest user message.
-    emotion : Emotion name to steer toward, or "none" for unsteered.
-    alpha : Steering strength (scaled by residual_norm internally).
+    When self_aware is True, the model is given access to an ``introspect``
+    tool via Llama 3.1's native tool-use protocol.  If the model decides to
+    call it, we return the previous turn's emotion readout via the ``ipython``
+    role, then let the model generate its final response incorporating that
+    data.  If the model doesn't call the tool, the response is used as-is.
     """
     history = _normalize_history(history)
+
+    template_kwargs = {}
+    if self_aware:
+        template_kwargs["tools"] = [INTROSPECT_TOOL]
+
     text = tokenizer.apply_chat_template(
-        history, tokenize=False, add_generation_prompt=True,
+        history, tokenize=False, add_generation_prompt=True, **template_kwargs,
     )
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
@@ -142,18 +181,37 @@ def generate_response(
         pad_token_id=tokenizer.pad_token_id,
     )
 
-    steer = emotion != "none" and emotion in emotion_vectors and alpha != 0.0
-    if steer:
-        vec = emotion_vectors[emotion]
-        scaled_alpha = alpha * residual_norm
-        with MultiLayerSteeringHook(model, vec, scaled_alpha):
-            with torch.no_grad():
-                output = model.generate(**inputs, **gen_kwargs)
-    else:
-        with torch.no_grad():
-            output = model.generate(**inputs, **gen_kwargs)
-
+    output = _generate_once(inputs, emotion, alpha, **gen_kwargs)
     prompt_len = inputs["input_ids"].shape[1]
+
+    # Decode WITH special tokens to detect tool calls
+    raw_response = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=False).strip()
+
+    # Check if the model called the introspect tool
+    if self_aware and "<|python_tag|>" in raw_response:
+        readout = prev_readout or {name: 0.0 for name in emotion_vectors}
+
+        # Extract the tool call text (before end-of-message/turn tokens)
+        tool_call_text = raw_response.split("<|python_tag|>", 1)[1]
+        for stop in ("<|eom_id|>", "<|eot_id|>"):
+            tool_call_text = tool_call_text.split(stop)[0]
+
+        # Build continuation: history + assistant tool call + ipython result
+        tool_history = history + [
+            {"role": "assistant", "content": "<|python_tag|>" + tool_call_text},
+            {"role": "ipython", "content": json.dumps(readout)},
+        ]
+
+        text2 = tokenizer.apply_chat_template(
+            tool_history, tokenize=False, add_generation_prompt=True,
+        )
+        inputs2 = tokenizer(text2, return_tensors="pt").to(model.device)
+        prompt2_len = inputs2["input_ids"].shape[1]
+
+        output2 = _generate_once(inputs2, emotion, alpha, **gen_kwargs)
+        return tokenizer.decode(output2[0][prompt2_len:], skip_special_tokens=True).strip()
+
+    # No tool call — return response directly
     return tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True).strip()
 
 
@@ -315,6 +373,17 @@ def build_ui():
                     value="**Status:** No steering active",
                 )
 
+                gr.Markdown("### Self-Awareness")
+                self_aware_toggle = gr.Checkbox(
+                    label="Self-Awareness Mode",
+                    value=False,
+                )
+                gr.Markdown(
+                    "*When enabled, the model can introspect on "
+                    "its own emotional state via a tool call.*",
+                )
+                prev_readout_state = gr.State(value=None)
+
                 gr.Markdown("### Emotional State Readout")
                 readout_plot = gr.Plot(
                     value=build_empty_readout_chart(),
@@ -334,14 +403,15 @@ def build_ui():
             history = history + [{"role": "user", "content": message}]
             return "", history
 
-        def bot_respond(history: list[dict], emotion: str, alpha: float):
+        def bot_respond(history: list[dict], emotion: str, alpha: float,
+                       self_aware: bool, prev_readout: dict | None):
             """Generate assistant response, compute emotion readout, return both."""
-            response = generate_response(history, emotion, alpha)
+            response = generate_response(history, emotion, alpha, self_aware, prev_readout)
             history = _normalize_history(history)
             history = history + [{"role": "assistant", "content": response}]
             similarities = compute_emotion_readout(history)
             chart = build_readout_chart(similarities)
-            return history, chart, similarities
+            return history, chart, similarities, similarities
 
         def update_status(emotion: str, alpha: float) -> str:
             if emotion == "none" or alpha == 0.0:
@@ -350,19 +420,18 @@ def build_ui():
             return f"**Status:** {direction} **{emotion}** at alpha={alpha:+.3f}"
 
         # Wire: user submits -> append user msg -> bot responds + update readout
+        bot_inputs = [chatbot, emotion_dropdown, alpha_slider, self_aware_toggle, prev_readout_state]
+        bot_outputs = [chatbot, readout_plot, readout_json, prev_readout_state]
+
         msg.submit(
             user_submit, [msg, chatbot], [msg, chatbot], queue=False,
         ).then(
-            bot_respond,
-            [chatbot, emotion_dropdown, alpha_slider],
-            [chatbot, readout_plot, readout_json],
+            bot_respond, bot_inputs, bot_outputs,
         )
         send_btn.click(
             user_submit, [msg, chatbot], [msg, chatbot], queue=False,
         ).then(
-            bot_respond,
-            [chatbot, emotion_dropdown, alpha_slider],
-            [chatbot, readout_plot, readout_json],
+            bot_respond, bot_inputs, bot_outputs,
         )
 
         emotion_dropdown.change(
@@ -373,16 +442,15 @@ def build_ui():
         )
 
         clear_btn.click(
-            lambda: (build_empty_readout_chart(), None),
-            outputs=[readout_plot, readout_json],
+            lambda: (build_empty_readout_chart(), None, None),
+            outputs=[readout_plot, readout_json, prev_readout_state],
         )
 
-    return demo, chatbot, msg, send_btn, clear_btn, emotion_dropdown, alpha_slider, readout_plot, readout_json, steering_status
-
+    return demo
 
 if __name__ == "__main__":
     args = parse_args()
     load_model_and_vectors(args.model_id)
-    demo, chatbot, msg, send_btn, clear_btn, emotion_dropdown, alpha_slider, readout_plot, readout_json, steering_status = build_ui()
+    demo = build_ui()
     demo.queue()
     demo.launch(server_port=args.port, share=args.share)
