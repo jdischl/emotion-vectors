@@ -1,7 +1,7 @@
 [project]
 name = "emotion-vectors"
 version = "0.1.0"
-description = "Extract and validate emotion vectors from Gemma 4's internal representations"
+description = "Extract and validate emotion vectors from Llama 3.1 8B's internal representations"
 requires-python = ">=3.11"
 dependencies = [
     "torch>=2.2.0",
@@ -14,6 +14,8 @@ dependencies = [
     "tqdm>=4.66.0",
     "jsonlines>=4.0.0",
     "umap-learn>=0.5.0",
+    "gradio>=4.0.0",
+    "plotly>=5.18.0",
 ]
 
 [tool.setuptools]

@@ -11,12 +11,11 @@ Replicate Part 1 of Anthropic's "Emotion Concepts and their Function in a Large 
 - Generation-based extraction (model writes its own stories) produces better results — fast/cheap with 8B
 
 ## Current Status (2026-04-15)
-- Model switch from Gemma 4 31B to Llama 3.1 8B complete
-- Methodology aligned with Jeong (2026) replication studies
-- Old Gemma 4 data removed from git (`.gitignore` now covers all `data/` and `outputs/`)
-- Step 1 (story generation) running on pod with Llama — check if complete
-- Steps 2-5 still need to run with Llama-generated data
-- Step 5 (steering) has never been run with any model yet
+- **All 5 pipeline steps complete** with Llama 3.1 8B on RunPod A40
+- Research report written: `docs/experiment-report.md` (+ PDF)
+- Results: vector geometry r=0.97, best probe layer 16 (F1=0.647), steering confirmed causal
+- Steering regime: surgical 0.005-0.02 works, collapse at >=0.05
+- **Next:** Build Gradio chat interface (`06_chat_interface.py`) — plan ready at `.claude/plans/snoopy-wishing-flame.md`, implement it
 
 ## Methodology (Jeong 2026 alignment)
 - **Layer selection**: 37.5% depth optimal for Llama 3.1 8B (layer 12 of 32)
@@ -49,6 +48,7 @@ Replicate Part 1 of Anthropic's "Emotion Concepts and their Function in a Large 
 3. `03_compute_vectors.py` — mean-diff vectors with PCA denoising (CPU only)
 4. `04_validate_probes.py` — logistic regression probes (CPU only)
 5. `05_steer_and_eval.py` — steering + LLM-as-judge evaluation (needs GPU)
+6. `06_chat_interface.py` — Gradio chat with real-time emotion steering + state readout (needs GPU)
 
 ## RunPod Setup
 - A40 48GB or L40 48GB sufficient (~16GB model + room for activations)
