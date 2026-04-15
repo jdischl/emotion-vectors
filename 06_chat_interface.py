@@ -193,6 +193,21 @@ def generate_response(
     template_kwargs = {}
     if self_aware:
         template_kwargs["tools"] = [INTROSPECT_TOOL]
+        # System prompt: ground the model's behavior around introspection
+        system_msg = {
+            "role": "system",
+            "content": (
+                "You have access to an introspect tool that reads your internal "
+                "emotional state. When asked about your emotional state or feelings, "
+                "you MUST call the introspect tool first and report ONLY the exact "
+                "numbers it returns. NEVER invent, estimate, or hallucinate emotional "
+                "state numbers. If you have not called the introspect tool, say that "
+                "you have not checked your emotional state yet and offer to do so. "
+                "For questions unrelated to your emotional state, respond normally "
+                "without calling the tool."
+            ),
+        }
+        history = [system_msg] + history
 
     text = tokenizer.apply_chat_template(
         history, tokenize=False, add_generation_prompt=True, **template_kwargs,
@@ -424,6 +439,10 @@ def build_ui():
                     "its own emotional state via a tool call.*",
                 )
                 prev_readout_state = gr.State(value=None)
+                introspect_sent = gr.JSON(
+                    label="Last Sent to Model",
+                    visible=True,
+                )
 
                 gr.Markdown("### Emotional State Readout")
                 readout_plot = gr.Plot(
@@ -452,7 +471,9 @@ def build_ui():
             history = history + [{"role": "assistant", "content": response}]
             similarities = compute_emotion_readout(history)
             chart = build_readout_chart(similarities)
-            return history, chart, similarities, similarities
+            # Show what the model was given for introspection (prev_readout)
+            sent = prev_readout if (self_aware and prev_readout) else None
+            return history, chart, similarities, similarities, sent
 
         def update_status(emotion: str, alpha: float) -> str:
             if emotion == "none" or alpha == 0.0:
@@ -462,7 +483,7 @@ def build_ui():
 
         # Wire: user submits -> append user msg -> bot responds + update readout
         bot_inputs = [chatbot, emotion_dropdown, alpha_slider, self_aware_toggle, prev_readout_state]
-        bot_outputs = [chatbot, readout_plot, readout_json, prev_readout_state]
+        bot_outputs = [chatbot, readout_plot, readout_json, prev_readout_state, introspect_sent]
 
         msg.submit(
             user_submit, [msg, chatbot], [msg, chatbot], queue=False,
@@ -483,8 +504,8 @@ def build_ui():
         )
 
         clear_btn.click(
-            lambda: (build_empty_readout_chart(), None, None),
-            outputs=[readout_plot, readout_json, prev_readout_state],
+            lambda: (build_empty_readout_chart(), None, None, None),
+            outputs=[readout_plot, readout_json, prev_readout_state, introspect_sent],
         )
 
     return demo
