@@ -121,13 +121,24 @@ def load_model_and_vectors(model_id: str):
 def _normalize_history(history: list[dict]) -> list[dict]:
     """Convert Gradio's internal message format to plain openai-style dicts.
 
-    Gradio's Chatbot wraps content as {"text": "...", "type": "text"} dicts,
-    but apply_chat_template expects plain strings in the content field.
+    Gradio 6.0 wraps content as a list of content blocks:
+        [{"type": "text", "text": "Hello"}, ...]
+    Older versions used a single dict: {"text": "...", "type": "text"}.
+    apply_chat_template expects plain strings in the content field.
     """
     normalized = []
     for msg in history:
         content = msg.get("content", "")
-        if isinstance(content, dict):
+        if isinstance(content, list):
+            # Gradio 6.0: list of content blocks
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    parts.append(block)
+            content = "\n".join(parts) if parts else ""
+        elif isinstance(content, dict):
             content = content.get("text", str(content))
         normalized.append({"role": msg["role"], "content": content})
     return normalized
