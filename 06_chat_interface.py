@@ -99,6 +99,21 @@ def load_model_and_vectors(model_id: str):
     print("Model loaded.")
 
 
+def _normalize_history(history: list[dict]) -> list[dict]:
+    """Convert Gradio's internal message format to plain openai-style dicts.
+
+    Gradio's Chatbot wraps content as {"text": "...", "type": "text"} dicts,
+    but apply_chat_template expects plain strings in the content field.
+    """
+    normalized = []
+    for msg in history:
+        content = msg.get("content", "")
+        if isinstance(content, dict):
+            content = content.get("text", str(content))
+        normalized.append({"role": msg["role"], "content": content})
+    return normalized
+
+
 def generate_response(
     history: list[dict],
     emotion: str,
@@ -113,6 +128,7 @@ def generate_response(
     emotion : Emotion name to steer toward, or "none" for unsteered.
     alpha : Steering strength (scaled by residual_norm internally).
     """
+    history = _normalize_history(history)
     text = tokenizer.apply_chat_template(
         history, tokenize=False, add_generation_prompt=True,
     )
@@ -156,6 +172,8 @@ def compute_emotion_readout(history: list[dict]) -> dict[str, float]:
     """
     if not history or history[-1]["role"] != "assistant":
         return {name: 0.0 for name in emotion_vectors}
+
+    history = _normalize_history(history)
 
     # Tokenize full conversation to find where the assistant response starts
     full_text = tokenizer.apply_chat_template(
