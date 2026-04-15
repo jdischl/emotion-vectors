@@ -10,11 +10,11 @@ For each emotion and each target layer, we:
     4. Subtract the grand mean from each emotion mean (isolates what makes
        each emotion *distinctive from the average emotion*)
     5. Project out the "emotionality" direction (grand_mean - neutral_mean)
-       to compensate for our valence-imbalanced 10-emotion set
+       to compensate for our valence-imbalanced 5-emotion set
     6. Normalise to unit length
 
 Steps 3-5 follow the Anthropic methodology, with step 5 as an additional
-correction for our small emotion set (10 vs. 171 in the paper).
+correction for our small emotion set (5 vs. 171 in the paper).
 
 Methodology references:
     Anthropic (2026) §2.3 — "We obtained emotion vectors by averaging these
@@ -49,6 +49,9 @@ def parse_args() -> argparse.Namespace:
                     help="Layer indices to process (default: all in activations dir)")
     p.add_argument("--variance-threshold", type=float, default=0.5,
                     help="Fraction of neutral variance to project out (default: 0.5)")
+    p.add_argument("--no-denoise", action="store_true",
+                    help="Skip PCA denoising and emotionality projection (Jeong-style "
+                         "simple mean subtraction). Useful for comparison.")
     return p.parse_args()
 
 
@@ -141,7 +144,10 @@ def main():
 
     print(f"Processing layers: {layer_indices}")
     print(f"Emotions: {emotion_names}")
-    print(f"Neutral PCA variance threshold: {args.variance_threshold:.0%}")
+    if args.no_denoise:
+        print(f"Denoising: DISABLED (simple mean subtraction, Jeong-style)")
+    else:
+        print(f"Neutral PCA variance threshold: {args.variance_threshold:.0%}")
     print()
 
     expected_sim = expected_similarity(emotions)
@@ -167,41 +173,39 @@ def main():
         # --- Step 2: Compute grand mean across all emotion means ---
         # This is the mean-of-means (each emotion weighted equally),
         # not the mean of all individual stories.
-        all_means = torch.stack(list(emotion_means.values()))  # (10, d_model)
+        all_means = torch.stack(list(emotion_means.values()))  # (n_emotions, d_model)
         grand_mean = all_means.mean(dim=0)                     # (d_model,)
         print(f"  Grand mean computed across {len(emotion_means)} emotions")
 
-        # --- Step 3: PCA confound removal from neutral data ---
-        # Fit PCA on neutral activations, find components explaining 50% of
-        # variance.  These capture writing-style, topic, and narrative structure
-        # variance that is unrelated to emotion.
-        pca_components = fit_neutral_pca(neutral_acts, args.variance_threshold)
-        pca_directions = torch.tensor(pca_components, dtype=torch.float32)
-
-        # --- Step 4: Subtract grand mean from each emotion mean ---
-        # This isolates what makes each emotion distinctive from the average
-        # emotion (the paper's approach), not from neutral.
+        # --- Step 3-6: Vector computation ---
+        # Two modes: full denoising (Anthropic-style) or simple mean
+        # subtraction (Jeong-style, --no-denoise).
         raw_vectors = {}
         for name in emotion_names:
             raw_vectors[name] = emotion_means[name] - grand_mean
 
-        # --- Step 5: Project out neutral PCA components ---
-        raw_matrix = torch.stack([raw_vectors[n] for n in emotion_names])  # (10, d_model)
-        denoised = project_out(raw_matrix, pca_directions)
+        raw_matrix = torch.stack([raw_vectors[n] for n in emotion_names])  # (n_emotions, d_model)
 
-        # --- Step 6: Project out the "emotionality" direction ---
-        # With only 10 emotions (7 negative-valence), the grand mean is skewed.
-        # The direction (grand_mean - neutral_mean) captures shared "being
-        # emotional" signal.  Projecting it out removes this bias.
-        # We first project the emotionality direction through the same PCA
-        # filter so it lives in the same subspace as our denoised vectors.
-        emotionality_dir = grand_mean - neutral_mean
-        emotionality_dir = project_out(emotionality_dir.unsqueeze(0), pca_directions).squeeze(0)
-        emotionality_norm = emotionality_dir.norm()
-        if emotionality_norm > 1e-8:
-            emotionality_unit = (emotionality_dir / emotionality_norm).unsqueeze(0)  # (1, d_model)
-            denoised = project_out(denoised, emotionality_unit)
-            print(f"  Projected out emotionality direction (norm={emotionality_norm:.2f})")
+        if args.no_denoise:
+            # Jeong-style: just mean subtraction, no PCA or emotionality projection
+            denoised = raw_matrix
+            print("  Skipping PCA denoising and emotionality projection")
+        else:
+            # Anthropic-style: PCA confound removal + emotionality projection
+            pca_components = fit_neutral_pca(neutral_acts, args.variance_threshold)
+            pca_directions = torch.tensor(pca_components, dtype=torch.float32)
+
+            denoised = project_out(raw_matrix, pca_directions)
+
+            # Project out the "emotionality" direction (grand_mean - neutral_mean)
+            # to compensate for valence-imbalanced emotion set
+            emotionality_dir = grand_mean - neutral_mean
+            emotionality_dir = project_out(emotionality_dir.unsqueeze(0), pca_directions).squeeze(0)
+            emotionality_norm = emotionality_dir.norm()
+            if emotionality_norm > 1e-8:
+                emotionality_unit = (emotionality_dir / emotionality_norm).unsqueeze(0)
+                denoised = project_out(denoised, emotionality_unit)
+                print(f"  Projected out emotionality direction (norm={emotionality_norm:.2f})")
 
         # --- Step 7: Normalise to unit length and save ---
         vectors = []

@@ -2,9 +2,9 @@
 """
 Step 2 — Extract residual-stream activations for each story.
 
-For every story generated in step 1, we run a forward pass through Gemma 4
+For every story generated in step 1, we run a forward pass through the model
 and capture the residual-stream hidden states at three target layers (25%,
-50%, 75% depth, snapped to global-attention layers).  We average the
+50%, 75% depth).  We average the
 activation across all token positions from position 50 onward (skipping
 early tokens where the model hasn't yet processed enough emotional context).
 
@@ -23,7 +23,7 @@ Methodology reference:
 Usage:
     python 02_extract_activations.py
     python 02_extract_activations.py --batch-size 4     # reduce if OOM
-    python 02_extract_activations.py --layers 17 29 47  # override auto-detect
+    python 02_extract_activations.py --layers 8 16 24   # override auto-detect
 """
 
 import argparse
@@ -195,7 +195,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        dtype=config.DTYPE,
+        torch_dtype=config.DTYPE,
         device_map="auto",
     )
     model.eval()

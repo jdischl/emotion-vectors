@@ -31,9 +31,10 @@ DTYPE = torch.bfloat16
 # ---------------------------------------------------------------------------
 # Layer targeting
 # ---------------------------------------------------------------------------
-# We sample the residual stream at 25%, 50%, and 75% depth.
-# For Llama 3.1 8B (32 layers, all global attention): layers 8, 16, 24.
-TARGET_LAYER_PERCENTAGES = [0.25, 0.50, 0.75]
+# We sample the residual stream at 37.5%, 50%, and 75% depth.
+# For Llama 3.1 8B (32 layers): layers 12, 16, 24.
+# Jeong (2026) found 37.5% (layer 12) optimal for Llama 3.1 8B.
+TARGET_LAYER_PERCENTAGES = [0.375, 0.50, 0.75]
 
 # Models with hybrid attention (e.g. Gemma 4) place global attention at
 # every Nth layer; we snap targets to these layers.  For models with
@@ -140,7 +141,10 @@ GENERATION_MAX_NEW_TOKENS = 256
 # ---------------------------------------------------------------------------
 # Steering
 # ---------------------------------------------------------------------------
-STEERING_ALPHAS = [-0.1, -0.05, 0.0, 0.05, 0.1, 0.15, 0.2]
+# Steering alphas aligned with Jeong (2026): 0.005-0.05 range.
+# Applied at ALL layers simultaneously, so effective perturbation is
+# alpha × num_layers spread across the network.
+STEERING_ALPHAS = [-0.02, -0.01, 0.0, 0.005, 0.01, 0.02, 0.05]
 
 # ---------------------------------------------------------------------------
 # Helpers

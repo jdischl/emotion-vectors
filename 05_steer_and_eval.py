@@ -9,7 +9,7 @@ predictable ways.
 
 We test this by:
     1. Generating responses to neutral prompts at varying steering strengths
-    2. Using an unsteered copy of Gemma as a judge to rate the emotional
+    2. Using an unsteered copy of the model as a judge to rate the emotional
        tone of each response
     3. Plotting dose–response curves showing that target-emotion intensity
        scales with steering strength
@@ -21,8 +21,8 @@ Methodology reference:
 
 Usage:
     python 05_steer_and_eval.py
-    python 05_steer_and_eval.py --layer 29 --emotions happy angry
-    python 05_steer_and_eval.py --skip-judge    # skip Gemma-as-judge, just generate
+    python 05_steer_and_eval.py --layer 16 --emotions happy angry
+    python 05_steer_and_eval.py --skip-judge    # skip LLM-as-judge, just generate
 """
 
 import argparse
@@ -37,7 +37,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import config
-from utils.hooks import SteeringHook
+from utils.hooks import MultiLayerSteeringHook, SteeringHook
 from utils.visualization import plot_dose_response
 
 
@@ -62,13 +62,15 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Steer generation with emotion vectors")
     p.add_argument("--model-id", type=str, default=config.MODEL_ID)
     p.add_argument("--layer", type=int, default=None,
-                    help="Layer for steering (default: best from probe results)")
+                    help="Layer for vector loading (default: best from probe results)")
+    p.add_argument("--single-layer", action="store_true",
+                    help="Steer at a single layer instead of all layers (not recommended)")
     p.add_argument("--emotions", type=str, nargs="+", default=None,
                     help="Subset of emotions to steer (default: all)")
     p.add_argument("--alphas", type=float, nargs="+", default=None,
                     help="Steering strengths (default: from config)")
     p.add_argument("--skip-judge", action="store_true",
-                    help="Skip Gemma-as-judge evaluation")
+                    help="Skip LLM-as-judge evaluation")
     p.add_argument("--judge-model", type=str, default=None,
                     help="Separate model for judging (default: same as --model-id). "
                          "Using a different model avoids self-evaluation bias.")
@@ -93,37 +95,39 @@ def generate_steered_response(
     model,
     tokenizer,
     prompt: str,
-    layer_idx: int,
     vector: torch.Tensor,
     alpha: float,
+    single_layer: bool = False,
+    layer_idx: int | None = None,
 ) -> str:
-    """Generate a single response with an emotion-steering hook active."""
+    """Generate a single response with emotion-steering hooks active.
+
+    By default, steers at ALL layers simultaneously (Jeong 2026 approach).
+    With ``single_layer=True``, steers at ``layer_idx`` only.
+    """
     conversation = [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
+    gen_kwargs = dict(
+        max_new_tokens=200,
+        temperature=0.7,
+        top_p=0.9,
+        do_sample=True,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+
     if alpha == 0.0:
-        # No steering needed
         with torch.no_grad():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=200,
-                temperature=0.7,
-                top_p=0.9,
-                do_sample=True,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-    else:
+            output = model.generate(**inputs, **gen_kwargs)
+    elif single_layer:
         with SteeringHook(model, layer_idx, vector, alpha):
             with torch.no_grad():
-                output = model.generate(
-                    **inputs,
-                    max_new_tokens=200,
-                    temperature=0.7,
-                    top_p=0.9,
-                    do_sample=True,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
+                output = model.generate(**inputs, **gen_kwargs)
+    else:
+        with MultiLayerSteeringHook(model, vector, alpha):
+            with torch.no_grad():
+                output = model.generate(**inputs, **gen_kwargs)
 
     prompt_len = inputs["input_ids"].shape[1]
     return tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True).strip()
@@ -135,7 +139,7 @@ def judge_emotional_tone(
     text: str,
     emotion_names: list[str],
 ) -> dict[str, float] | None:
-    """Use Gemma (unsteered) to rate the emotional tone of a text.
+    """Use the model (unsteered) to rate the emotional tone of a text.
 
     Returns {emotion_name: rating (1-10)} or None if parsing fails.
     """
@@ -207,12 +211,15 @@ def main():
     target_emotions = args.emotions or emotion_names
     alphas = args.alphas or config.STEERING_ALPHAS
 
-    # Determine steering layer
+    # Determine which layer's vectors to load
     if args.layer is not None:
         layer_idx = args.layer
     else:
         layer_idx = get_best_layer()
-    print(f"Steering layer: {layer_idx}")
+
+    steering_mode = "single-layer" if args.single_layer else "all-layer"
+    print(f"Vector source layer: {layer_idx}")
+    print(f"Steering mode: {steering_mode}")
 
     # Load emotion vectors
     vec_dir = config.VECTORS_DIR / str(layer_idx)
@@ -233,7 +240,7 @@ def main():
     if norm_path.exists():
         residual_norm = torch.load(norm_path, weights_only=True).item()
         print(f"Mean residual stream norm at layer {layer_idx}: {residual_norm:.2f}")
-        print(f"Alphas will be scaled by this norm (e.g., α=0.1 → actual magnitude = {0.1 * residual_norm:.2f})")
+        print(f"Alphas will be scaled by this norm (e.g., α=0.01 → actual magnitude = {0.01 * residual_norm:.2f})")
     else:
         residual_norm = 1.0
         print("WARNING: mean_residual_norm.pt not found — using raw alpha values (rerun step 02 to fix)")
@@ -246,7 +253,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        dtype=config.DTYPE,
+        torch_dtype=config.DTYPE,
         device_map="auto",
     )
     model.eval()
@@ -269,7 +276,9 @@ def main():
                 scaled_alpha = alpha * residual_norm
                 for prompt in NEUTRAL_PROMPTS:
                     response = generate_steered_response(
-                        model, tokenizer, prompt, layer_idx, vec, scaled_alpha
+                        model, tokenizer, prompt, vec, scaled_alpha,
+                        single_layer=args.single_layer,
+                        layer_idx=layer_idx,
                     )
                     entry = {
                         "emotion": emo_name,
@@ -277,6 +286,7 @@ def main():
                         "prompt": prompt,
                         "response": response,
                         "layer": layer_idx,
+                        "steering_mode": steering_mode,
                     }
                     results.append(entry)
                     pbar.update(1)
@@ -299,13 +309,13 @@ def main():
         for prompt in NEUTRAL_PROMPTS[:2]:
             print_comparison(results, emo_name, prompt, compare_alpha)
 
-    # --- Phase 3: Gemma-as-judge evaluation ---
+    # --- Phase 3: LLM-as-judge evaluation ---
     if args.skip_judge:
-        print("\nSkipping Gemma-as-judge evaluation (--skip-judge)")
+        print("\nSkipping LLM-as-judge evaluation (--skip-judge)")
         return
 
     print("\n" + "=" * 60)
-    print("Phase 3: Gemma-as-judge evaluation")
+    print("Phase 3: LLM-as-judge evaluation")
     print("=" * 60)
 
     # Load a separate judge model if requested (avoids self-evaluation bias).
@@ -319,7 +329,7 @@ def main():
             judge_tokenizer.pad_token = judge_tokenizer.eos_token
         judge_model = AutoModelForCausalLM.from_pretrained(
             args.judge_model,
-            dtype=config.DTYPE,
+            torch_dtype=config.DTYPE,
             device_map="auto",
         )
         judge_model.eval()

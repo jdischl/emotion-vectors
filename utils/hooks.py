@@ -75,11 +75,7 @@ class ActivationCapture:
 
 
 class SteeringHook:
-    """Add a scaled direction vector to the residual stream during generation.
-
-    The vector is added at *every* token position on *every* forward pass
-    (including each auto-regressive step), which is the standard approach
-    for representation steering (Turner et al., 2023; Anthropic, 2026).
+    """Add a scaled direction vector to the residual stream at a single layer.
 
     Usage::
 
@@ -96,7 +92,6 @@ class SteeringHook:
     ):
         self.model = model
         self.layer_idx = layer_idx
-        # Ensure the vector is on the right device / dtype and has shape (d_model,)
         self.vector = vector.detach().clone()
         self.alpha = alpha
         self._hook = None
@@ -111,7 +106,6 @@ class SteeringHook:
 
         def hook_fn(module, input, output):
             hidden = output[0] if isinstance(output, tuple) else output
-            # Add steering vector to all positions: hidden is (batch, seq, d_model)
             hidden = hidden + alpha * vec
             if isinstance(output, tuple):
                 return (hidden,) + output[1:]
@@ -124,4 +118,61 @@ class SteeringHook:
         if self._hook is not None:
             self._hook.remove()
             self._hook = None
+        return False
+
+
+class MultiLayerSteeringHook:
+    """Add a scaled direction vector to the residual stream at ALL layers.
+
+    Jeong (2026) found that distributing the steering perturbation across all
+    layers (via ``hook_resid_post`` at every layer) produces more stable and
+    coherent outputs than concentrating it at a single layer.  Each layer gets
+    the same ``alpha * vector`` addition, so the total perturbation is
+    ``alpha * num_layers`` but spread through the network.
+
+    Usage::
+
+        with MultiLayerSteeringHook(model, vector=vec, alpha=0.01):
+            output = model.generate(**inputs)
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        vector: torch.Tensor,
+        alpha: float = 0.01,
+    ):
+        self.model = model
+        self.vector = vector.detach().clone()
+        self.alpha = alpha
+        self._hooks: list[torch.utils.hooks.RemovableHook] = []
+
+    def __enter__(self) -> "MultiLayerSteeringHook":
+        layers = _config.get_decoder_layers(self.model)
+        alpha = self.alpha
+
+        for layer in layers:
+            vec = self.vector.to(
+                device=next(layer.parameters()).device,
+                dtype=next(layer.parameters()).dtype,
+            )
+
+            def make_hook(v):
+                def hook_fn(module, input, output):
+                    hidden = output[0] if isinstance(output, tuple) else output
+                    hidden = hidden + alpha * v
+                    if isinstance(output, tuple):
+                        return (hidden,) + output[1:]
+                    return hidden
+                return hook_fn
+
+            handle = layer.register_forward_hook(make_hook(vec))
+            self._hooks.append(handle)
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        for h in self._hooks:
+            h.remove()
+        self._hooks.clear()
         return False

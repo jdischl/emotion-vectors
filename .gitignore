@@ -1,11 +1,6 @@
-# Data and outputs (large, generated)
-data/activations/
-data/vectors/
+# Data and outputs (large, generated — regenerated per model)
+data/
 outputs/
-
-# Allow story data (text, ~2MB)
-!data/
-!data/stories/
 
 # Python
 __pycache__/

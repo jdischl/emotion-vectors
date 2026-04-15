@@ -30,7 +30,7 @@ Replicate Part 1 of Anthropic's "Emotion Concepts and their Function in a Large 
 - All layers use global attention (no hybrid/sliding window)
 - Config is flat: `model.config.hidden_size` works directly (no nested text_config)
 - Layers at `model.model.layers` (standard path)
-- Target layers: **8, 16, 24** (25/50/75% depth)
+- Target layers: **12, 16, 24** (37.5/50/75% depth; Jeong 2026 found 37.5% optimal for Llama 3.1 8B)
 - Tokenizer: no pad token set by default — scripts set `pad_token = eos_token`
 
 ## Pipeline Scripts
@@ -56,8 +56,11 @@ Replicate Part 1 of Anthropic's "Emotion Concepts and their Function in a Large 
 - `config.get_decoder_layers(model)` — tries multiple HF model structures; `model.model.layers` matches for Llama
 - `config.get_target_layers(model)` — model-aware: uses raw percentages for Llama, snaps to global attention layers for hybrid models
 - Activation averaging from token 50 onward
-- PCA denoising: project out neutral variance components explaining 50% of variance
+- PCA denoising: project out neutral variance components explaining 50% of variance (can be disabled with `--no-denoise` for Jeong-style simple mean subtraction)
 - Emotionality direction projected out to compensate for valence imbalance
+- **Steering**: all-layer approach (Jeong 2026) — vector added at every decoder layer simultaneously
+- **Steering alphas**: 0.005–0.05 range (Jeong-aligned), scaled by mean residual stream norm
+- `MultiLayerSteeringHook` in `utils/hooks.py` for all-layer steering; `SteeringHook` still available for single-layer via `--single-layer` flag
 
 ## Local Development
 - Python managed via `uv` (Homebrew): `uv run python <script>.py`
