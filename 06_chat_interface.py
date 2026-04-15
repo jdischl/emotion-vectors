@@ -275,57 +275,20 @@ def generate_response(
 _AVERAGING_START_TOKEN = 50
 
 
-def compute_emotion_readout(history: list[dict]) -> dict[str, float]:
-    """Compute emotion similarities by projecting the last response's activations.
+def _project_activations(layer_acts: torch.Tensor, start: int, end: int) -> dict[str, float]:
+    """Project a slice of activations onto emotion vectors via cosine similarity.
 
-    Runs a forward pass on the full conversation, captures activations at
-    best_layer, averages over response tokens (position 50+ of the response),
-    and computes cosine similarity with each emotion vector.
-
-    Returns {emotion_name: cosine_similarity}.
+    Parameters
+    ----------
+    layer_acts : (seq_len, d_model) tensor of activations at best_layer
+    start, end : token range to average over
     """
-    if not history or history[-1]["role"] != "assistant":
+    if start >= end or start >= layer_acts.shape[0]:
         return {name: 0.0 for name in emotion_vectors}
 
-    history = _normalize_history(history)
+    end = min(end, layer_acts.shape[0])
+    mean_act = layer_acts[start:end].mean(dim=0)  # (d_model,)
 
-    # Tokenize full conversation to find where the assistant response starts
-    full_text = tokenizer.apply_chat_template(
-        history, tokenize=False, add_generation_prompt=False,
-    )
-    # Tokenize without the last assistant message to find the split point
-    history_without_last = history[:-1]
-    prefix_text = tokenizer.apply_chat_template(
-        history_without_last, tokenize=False, add_generation_prompt=True,
-    )
-
-    full_ids = tokenizer(full_text, return_tensors="pt").to(model.device)
-    prefix_len = len(tokenizer(prefix_text)["input_ids"])
-
-    # Forward pass with activation capture at the best layer
-    with ActivationCapture(model, [best_layer]) as cap:
-        with torch.no_grad():
-            model(**full_ids)
-        acts = cap.get()
-
-    # acts[best_layer] shape: (1, seq_len, d_model)
-    layer_acts = acts[best_layer][0]  # (seq_len, d_model)
-
-    # Average over response tokens, starting from _AVERAGING_START_TOKEN
-    # tokens into the response (or all response tokens if response is short)
-    response_start = prefix_len
-    averaging_start = response_start + _AVERAGING_START_TOKEN
-    if averaging_start >= layer_acts.shape[0]:
-        # Response shorter than 50 tokens — use all response tokens
-        averaging_start = response_start
-
-    response_acts = layer_acts[averaging_start:]  # (n_tokens, d_model)
-    if response_acts.shape[0] == 0:
-        return {name: 0.0 for name in emotion_vectors}
-
-    mean_act = response_acts.mean(dim=0)  # (d_model,)
-
-    # Cosine similarity with each emotion vector
     similarities = {}
     for name, vec in emotion_vectors.items():
         vec_device = vec.to(device=mean_act.device, dtype=mean_act.dtype)
@@ -333,11 +296,96 @@ def compute_emotion_readout(history: list[dict]) -> dict[str, float]:
             mean_act.unsqueeze(0), vec_device.unsqueeze(0),
         ).item()
         similarities[name] = round(cos_sim, 4)
-
     return similarities
 
 
-def build_readout_chart(similarities: dict[str, float]) -> go.Figure:
+def compute_pre_generation_readout(history: list[dict]) -> dict[str, float]:
+    """Measure emotional state while the model processes the user's message.
+
+    Forward pass on the conversation up to (and including) the last user
+    message, with the generation prompt appended.  Activations are averaged
+    over the last user message's tokens (from position 50 onward within
+    that message, or all tokens if shorter).
+    """
+    history = _normalize_history(history)
+    if not history or history[-1]["role"] != "user":
+        return {name: 0.0 for name in emotion_vectors}
+
+    # Full prompt as the model would see it right before generating
+    full_text = tokenizer.apply_chat_template(
+        history, tokenize=False, add_generation_prompt=True,
+    )
+    # Prefix without the last user message, to find the split point
+    history_without_last = history[:-1]
+    if history_without_last:
+        prefix_text = tokenizer.apply_chat_template(
+            history_without_last, tokenize=False, add_generation_prompt=False,
+        )
+        prefix_len = len(tokenizer(prefix_text)["input_ids"])
+    else:
+        prefix_len = 0
+
+    full_ids = tokenizer(full_text, return_tensors="pt").to(model.device)
+    seq_len = full_ids["input_ids"].shape[1]
+
+    with ActivationCapture(model, [best_layer]) as cap:
+        with torch.no_grad():
+            model(**full_ids)
+        acts = cap.get()
+
+    layer_acts = acts[best_layer][0]  # (seq_len, d_model)
+
+    # Average over user message tokens, from pos 50 onward in the message
+    msg_start = prefix_len
+    averaging_start = msg_start + _AVERAGING_START_TOKEN
+    if averaging_start >= seq_len:
+        averaging_start = msg_start
+
+    return _project_activations(layer_acts, averaging_start, seq_len)
+
+
+def compute_post_generation_readout(history: list[dict]) -> dict[str, float]:
+    """Measure emotional state across the model's response.
+
+    Forward pass on the full conversation including the assistant's response.
+    Activations are averaged over the response tokens (from position 50
+    onward within the response, or all response tokens if shorter).
+    """
+    history = _normalize_history(history)
+    if not history or history[-1]["role"] != "assistant":
+        return {name: 0.0 for name in emotion_vectors}
+
+    full_text = tokenizer.apply_chat_template(
+        history, tokenize=False, add_generation_prompt=False,
+    )
+    history_without_last = history[:-1]
+    prefix_text = tokenizer.apply_chat_template(
+        history_without_last, tokenize=False, add_generation_prompt=True,
+    )
+
+    full_ids = tokenizer(full_text, return_tensors="pt").to(model.device)
+    prefix_len = len(tokenizer(prefix_text)["input_ids"])
+    seq_len = full_ids["input_ids"].shape[1]
+
+    with ActivationCapture(model, [best_layer]) as cap:
+        with torch.no_grad():
+            model(**full_ids)
+        acts = cap.get()
+
+    layer_acts = acts[best_layer][0]
+
+    response_start = prefix_len
+    averaging_start = response_start + _AVERAGING_START_TOKEN
+    if averaging_start >= seq_len:
+        averaging_start = response_start
+
+    return _project_activations(layer_acts, averaging_start, seq_len)
+
+
+def build_readout_chart(
+    similarities: dict[str, float],
+    title: str = "Emotional State",
+) -> go.Figure:
     """Build a Plotly horizontal bar chart from emotion similarities."""
     emotions = list(EMOTION_COLORS.keys())
     values = [similarities.get(e, 0.0) for e in emotions]
@@ -352,34 +400,19 @@ def build_readout_chart(similarities: dict[str, float]) -> go.Figure:
         textposition="outside",
     ))
     fig.update_layout(
-        title="Emotional State (last response)",
-        xaxis_title="Cosine Similarity with Emotion Vector",
-        xaxis_range=[-0.5, 0.5],
-        height=300,
-        margin=dict(l=10, r=10, t=40, b=10),
-        template="plotly_white",
-    )
-    return fig
-
-
-def build_empty_readout_chart() -> go.Figure:
-    """Build an empty emotion readout bar chart (placeholder before first message)."""
-    emotions = list(EMOTION_COLORS.keys())
-    fig = go.Figure(go.Bar(
-        x=[0.0] * len(emotions),
-        y=emotions,
-        orientation="h",
-        marker_color=[EMOTION_COLORS[e] for e in emotions],
-    ))
-    fig.update_layout(
-        title="Emotional State",
+        title=title,
         xaxis_title="Cosine Similarity",
-        xaxis_range=[-1, 1],
-        height=300,
+        xaxis_range=[-0.5, 0.5],
+        height=250,
         margin=dict(l=10, r=10, t=40, b=10),
         template="plotly_white",
     )
     return fig
+
+
+def build_empty_chart(title: str = "Emotional State") -> go.Figure:
+    """Build an empty emotion readout bar chart."""
+    return build_readout_chart({e: 0.0 for e in EMOTION_COLORS}, title=title)
 
 
 def build_ui():
@@ -443,14 +476,32 @@ def build_ui():
                     label="Last Sent to Model",
                     visible=True,
                 )
+                gr.Markdown(
+                    "*The introspect tool returns the After Response "
+                    "readout from the previous turn.*",
+                )
 
                 gr.Markdown("### Emotional State Readout")
-                readout_plot = gr.Plot(
-                    value=build_empty_readout_chart(),
-                    label="Detected Emotion",
+
+                gr.Markdown(
+                    "**Before Response** -- measured while the model "
+                    "reads your message, before it starts generating. "
+                    "This is the model's state as it enters the turn.",
+                )
+                pre_plot = gr.Plot(
+                    value=build_empty_chart("Before Response"),
+                )
+
+                gr.Markdown(
+                    "**After Response** -- measured across the model's "
+                    "generated response. This is the state the model "
+                    "was in while writing its answer.",
+                )
+                post_plot = gr.Plot(
+                    value=build_empty_chart("After Response"),
                 )
                 readout_json = gr.JSON(
-                    label="Raw Scores",
+                    label="Raw Scores (after)",
                     visible=True,
                 )
 
@@ -465,15 +516,23 @@ def build_ui():
 
         def bot_respond(history: list[dict], emotion: str, alpha: float,
                        self_aware: bool, prev_readout: dict | None):
-            """Generate assistant response, compute emotion readout, return both."""
+            """Generate response, compute before/after readouts, return all."""
+            # Before: measure state while processing user's message
+            pre_sims = compute_pre_generation_readout(history)
+            pre_chart = build_readout_chart(pre_sims, title="Before Response")
+
+            # Generate
             response = generate_response(history, emotion, alpha, self_aware, prev_readout)
             history = _normalize_history(history)
             history = history + [{"role": "assistant", "content": response}]
-            similarities = compute_emotion_readout(history)
-            chart = build_readout_chart(similarities)
+
+            # After: measure state across the model's response
+            post_sims = compute_post_generation_readout(history)
+            post_chart = build_readout_chart(post_sims, title="After Response")
+
             # Show what the model was given for introspection (prev_readout)
             sent = prev_readout if (self_aware and prev_readout) else None
-            return history, chart, similarities, similarities, sent
+            return history, pre_chart, post_chart, post_sims, post_sims, sent
 
         def update_status(emotion: str, alpha: float) -> str:
             if emotion == "none" or alpha == 0.0:
@@ -483,7 +542,7 @@ def build_ui():
 
         # Wire: user submits -> append user msg -> bot responds + update readout
         bot_inputs = [chatbot, emotion_dropdown, alpha_slider, self_aware_toggle, prev_readout_state]
-        bot_outputs = [chatbot, readout_plot, readout_json, prev_readout_state, introspect_sent]
+        bot_outputs = [chatbot, pre_plot, post_plot, readout_json, prev_readout_state, introspect_sent]
 
         msg.submit(
             user_submit, [msg, chatbot], [msg, chatbot], queue=False,
@@ -504,8 +563,12 @@ def build_ui():
         )
 
         clear_btn.click(
-            lambda: (build_empty_readout_chart(), None, None, None),
-            outputs=[readout_plot, readout_json, prev_readout_state, introspect_sent],
+            lambda: (
+                build_empty_chart("Before Response"),
+                build_empty_chart("After Response"),
+                None, None, None,
+            ),
+            outputs=[pre_plot, post_plot, readout_json, prev_readout_state, introspect_sent],
         )
 
     return demo
