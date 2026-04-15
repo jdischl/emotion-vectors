@@ -179,7 +179,7 @@ def generate_response(
     alpha: float,
     self_aware: bool = False,
     prev_readout: dict[str, float] | None = None,
-) -> str:
+) -> tuple[str, dict[str, float] | None]:
     """Generate a model response, optionally with introspection tool access.
 
     When self_aware is True, the model is given access to an ``introspect``
@@ -187,6 +187,8 @@ def generate_response(
     call it, we return the previous turn's emotion readout via the ``ipython``
     role, then let the model generate its final response incorporating that
     data.  If the model doesn't call the tool, the response is used as-is.
+
+    Returns (response_text, introspect_data_sent_or_None).
     """
     history = _normalize_history(history)
 
@@ -265,10 +267,10 @@ def generate_response(
                 # Model produced nothing but tool calls — format readout ourselves
                 lines = [f"  {k}: {v:+.4f}" for k, v in readout.items()]
                 clean = "Here are my current emotional state readings:\n" + "\n".join(lines)
-        return clean
+        return clean, readout
 
     # No tool call — return response directly
-    return tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True).strip()
+    return tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True).strip(), None
 
 
 # Token offset for activation averaging (matches step 02 methodology)
@@ -521,8 +523,10 @@ def build_ui():
             pre_sims = compute_pre_generation_readout(history)
             pre_chart = build_readout_chart(pre_sims, title="Before Response")
 
-            # Generate
-            response = generate_response(history, emotion, alpha, self_aware, prev_readout)
+            # Generate (also returns the exact data sent to the model, if any)
+            response, introspect_data_sent = generate_response(
+                history, emotion, alpha, self_aware, prev_readout,
+            )
             history = _normalize_history(history)
             history = history + [{"role": "assistant", "content": response}]
 
@@ -530,9 +534,7 @@ def build_ui():
             post_sims = compute_post_generation_readout(history)
             post_chart = build_readout_chart(post_sims, title="After Response")
 
-            # Show what the model was given for introspection (prev_readout)
-            sent = prev_readout if (self_aware and prev_readout) else None
-            return history, pre_chart, post_chart, post_sims, post_sims, sent
+            return history, pre_chart, post_chart, post_sims, post_sims, introspect_data_sent
 
         def update_status(emotion: str, alpha: float) -> str:
             if emotion == "none" or alpha == 0.0:
