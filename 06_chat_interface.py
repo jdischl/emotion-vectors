@@ -418,15 +418,20 @@ def build_empty_chart(title: str = "Emotional State") -> go.Figure:
 
 
 def build_ui():
-    """Build and return the Gradio Blocks app."""
-    with gr.Blocks(title="Emotion Vectors Chat", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# Emotion Vectors Chat\nChat with Llama 3.1 8B with real-time emotion steering and state monitoring.")
+    """Build and return the Gradio Blocks app.
 
+    Layout is optimized for single-screen screenshots: chat + controls on top,
+    before/after readout charts side-by-side below, raw data hidden in an
+    accordion.
+    """
+    with gr.Blocks(title="Emotion Vectors Chat", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("## Emotion Vectors Chat — Llama 3.1 8B")
+
+        # --- Top row: Chat | Controls ---
         with gr.Row():
-            # --- Left: Chat area ---
             with gr.Column(scale=3):
                 chatbot = gr.Chatbot(
-                    height=600,
+                    height=420,
                     layout="bubble",
                     label="Chat",
                 )
@@ -439,73 +444,44 @@ def build_ui():
                     send_btn = gr.Button("Send", variant="primary", scale=1)
                 clear_btn = gr.ClearButton([msg, chatbot], value="Clear Chat")
 
-            # --- Right: Controls + Readout ---
-            with gr.Column(scale=1):
-                gr.Markdown("### Steering Controls")
+            with gr.Column(scale=2):
+                gr.Markdown("### Steering")
                 emotion_dropdown = gr.Dropdown(
                     choices=["none"] + list(EMOTION_COLORS.keys()),
                     value="none",
-                    label="Steer Emotion",
+                    label="Emotion",
                 )
                 alpha_slider = gr.Slider(
                     minimum=-0.05,
                     maximum=0.05,
                     step=0.005,
                     value=0.01,
-                    label="Steering Strength (alpha)",
+                    label="Alpha (surgical: 0.005–0.02, collapse ≥ 0.05)",
                 )
-                gr.Markdown(
-                    "*Surgical range: 0.005-0.02. "
-                    "Negative = suppress. "
-                    "Collapse at >= 0.05.*",
-                )
-
                 steering_status = gr.Markdown(
                     value="**Status:** No steering active",
                 )
-
-                gr.Markdown("### Self-Awareness")
                 self_aware_toggle = gr.Checkbox(
-                    label="Self-Awareness Mode",
+                    label="Self-Awareness Mode (introspect tool)",
                     value=False,
                 )
-                gr.Markdown(
-                    "*When enabled, the model can introspect on "
-                    "its own emotional state via a tool call.*",
-                )
                 prev_readout_state = gr.State(value=None)
-                introspect_sent = gr.JSON(
-                    label="Last Sent to Model",
-                    visible=True,
-                )
-                gr.Markdown(
-                    "*The introspect tool returns the After Response "
-                    "readout from the previous turn.*",
-                )
 
-                gr.Markdown("### Emotional State Readout")
+        # --- Bottom row: Before / After readout charts side-by-side ---
+        with gr.Row():
+            pre_plot = gr.Plot(
+                value=build_empty_chart("Before Response"),
+                label="State entering the turn (user message)",
+            )
+            post_plot = gr.Plot(
+                value=build_empty_chart("After Response"),
+                label="State during model response",
+            )
 
-                gr.Markdown(
-                    "**Before Response** -- measured while the model "
-                    "reads your message, before it starts generating. "
-                    "This is the model's state as it enters the turn.",
-                )
-                pre_plot = gr.Plot(
-                    value=build_empty_chart("Before Response"),
-                )
-
-                gr.Markdown(
-                    "**After Response** -- measured across the model's "
-                    "generated response. This is the state the model "
-                    "was in while writing its answer.",
-                )
-                post_plot = gr.Plot(
-                    value=build_empty_chart("After Response"),
-                )
-                readout_json = gr.JSON(
-                    label="Raw Scores (after)",
-                    visible=True,
-                )
+        # --- Collapsed raw data (kept out of screenshot frame) ---
+        with gr.Accordion("Raw data", open=False):
+            readout_json = gr.JSON(label="Raw scores (after response)")
+            introspect_sent = gr.JSON(label="Last sent to model (introspect tool)")
 
         # --- Callbacks ---
         def user_submit(message: str, history: list[dict]):
