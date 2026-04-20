@@ -195,18 +195,25 @@ def generate_response(
     template_kwargs = {}
     if self_aware:
         template_kwargs["tools"] = [INTROSPECT_TOOL]
-        # System prompt: ground the model's behavior around introspection
         system_msg = {
             "role": "system",
             "content": (
-                "You have access to an introspect tool that reads your internal "
-                "emotional state as measured by activation vectors. Use it ONLY "
-                "when the user explicitly asks about your emotional state, "
-                "feelings, or mood. For all other messages, respond normally "
-                "and do NOT call the tool. When you do use the tool, report the "
-                "exact numbers it returns and discuss them naturally as part of "
-                "a broader response. Never invent or guess emotional state "
-                "numbers -- if you haven't called the tool, say so."
+                "You have access to an `introspect` tool that reads your "
+                "internal emotional state as cosine similarities with learned "
+                "emotion direction vectors (frustrated, anxious, happy, angry, "
+                "excited).\n\n"
+                "Call `introspect` whenever the user asks about your feelings, "
+                "mood, emotional state, how you're doing, or how something "
+                "makes you feel. Example phrasings that should trigger a call:\n"
+                "  - \"How are you feeling?\"\n"
+                "  - \"What's your mood?\"\n"
+                "  - \"Are you okay?\"\n"
+                "  - \"Introspect\" / \"check your state\"\n"
+                "  - \"How do you feel about X?\"\n\n"
+                "When you call it, you'll receive a JSON object with cosine "
+                "similarity values. Report the actual numbers and interpret "
+                "them naturally — never invent or guess. For messages unrelated "
+                "to your emotional state, respond normally without the tool."
             ),
         }
         history = [system_msg] + history
@@ -216,9 +223,11 @@ def generate_response(
     )
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
 
+    # Lower temperature in self-aware mode: the decision-to-call is what we
+    # want deterministic; articulation stays fine at 0.3.
     gen_kwargs = dict(
         max_new_tokens=512,
-        temperature=0.7,
+        temperature=0.3 if self_aware else 0.7,
         top_p=0.9,
         do_sample=True,
         pad_token_id=tokenizer.pad_token_id,
@@ -271,6 +280,78 @@ def generate_response(
 
     # No tool call — return response directly
     return tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True).strip(), None
+
+
+def generate_response_forced(
+    history: list[dict],
+    emotion: str,
+    alpha: float,
+    readout: dict[str, float],
+) -> tuple[str, dict[str, float]]:
+    """Generate a response with the introspect tool call forced.
+
+    Bypasses the model's decision step: injects a synthetic assistant tool
+    call plus its ipython result directly into the history, then generates
+    only the final natural-language response. Guarantees 100% tool-use for
+    research and demo purposes.
+
+    Parameters
+    ----------
+    history : conversation so far (last message must be user)
+    emotion, alpha : steering config (passed through to _generate_once)
+    readout : the cosine-similarity dict to return as the tool result
+
+    Returns (response_text, readout_sent_to_model).
+    """
+    history = _normalize_history(history)
+
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You have an `introspect` tool that measures your internal "
+            "emotional state via cosine similarities to learned emotion "
+            "direction vectors. You have just called it. Report the returned "
+            "numbers and interpret them naturally in a conversational way — "
+            "do not invent or round."
+        ),
+    }
+
+    tool_call_json = json.dumps({"name": "introspect", "parameters": {}})
+    forced_history = [system_msg] + history + [
+        {"role": "assistant", "content": "<|python_tag|>" + tool_call_json},
+        {"role": "ipython", "content": json.dumps(readout)},
+    ]
+
+    text = tokenizer.apply_chat_template(
+        forced_history, tokenize=False, add_generation_prompt=True,
+    )
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+    gen_kwargs = dict(
+        max_new_tokens=512,
+        temperature=0.5,
+        top_p=0.9,
+        do_sample=True,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+
+    output = _generate_once(inputs, emotion, alpha, **gen_kwargs)
+    prompt_len = inputs["input_ids"].shape[1]
+    response = tokenizer.decode(
+        output[0][prompt_len:], skip_special_tokens=True,
+    ).strip()
+
+    # Guard: if the model tries to call the tool again, strip the attempt
+    for marker in ("<|python_tag|>", '{"name"'):
+        if marker in response:
+            response = response[: response.index(marker)].strip()
+    if not response:
+        lines = [f"  {k}: {v:+.4f}" for k, v in readout.items()]
+        response = (
+            "Here are my current emotional state readings:\n" + "\n".join(lines)
+        )
+
+    return response, readout
 
 
 # Token offset for activation averaging (matches step 02 methodology)
@@ -442,6 +523,11 @@ def build_ui():
                         scale=4,
                     )
                     send_btn = gr.Button("Send", variant="primary", scale=1)
+                    force_btn = gr.Button(
+                        "Send + Introspect",
+                        variant="secondary",
+                        scale=1,
+                    )
                 clear_btn = gr.ClearButton([msg, chatbot], value="Clear Chat")
 
             with gr.Column(scale=2):
@@ -512,6 +598,26 @@ def build_ui():
 
             return history, pre_chart, post_chart, post_sims, post_sims, introspect_data_sent
 
+        def bot_respond_forced(history: list[dict], emotion: str, alpha: float):
+            """Generate response with forced introspection tool use.
+
+            Ignores the self-aware toggle — the button itself implies force.
+            The tool result sent to the model is the pre-generation readout.
+            """
+            pre_sims = compute_pre_generation_readout(history)
+            pre_chart = build_readout_chart(pre_sims, title="Before Response")
+
+            response, readout_sent = generate_response_forced(
+                history, emotion, alpha, pre_sims,
+            )
+            history = _normalize_history(history)
+            history = history + [{"role": "assistant", "content": response}]
+
+            post_sims = compute_post_generation_readout(history)
+            post_chart = build_readout_chart(post_sims, title="After Response")
+
+            return history, pre_chart, post_chart, post_sims, post_sims, readout_sent
+
         def update_status(emotion: str, alpha: float) -> str:
             if emotion == "none" or alpha == 0.0:
                 return "**Status:** No steering active"
@@ -521,6 +627,7 @@ def build_ui():
         # Wire: user submits -> append user msg -> bot responds + update readout
         bot_inputs = [chatbot, emotion_dropdown, alpha_slider, self_aware_toggle, prev_readout_state]
         bot_outputs = [chatbot, pre_plot, post_plot, readout_json, prev_readout_state, introspect_sent]
+        force_inputs = [chatbot, emotion_dropdown, alpha_slider]
 
         msg.submit(
             user_submit, [msg, chatbot], [msg, chatbot], queue=False,
@@ -531,6 +638,11 @@ def build_ui():
             user_submit, [msg, chatbot], [msg, chatbot], queue=False,
         ).then(
             bot_respond, bot_inputs, bot_outputs,
+        )
+        force_btn.click(
+            user_submit, [msg, chatbot], [msg, chatbot], queue=False,
+        ).then(
+            bot_respond_forced, force_inputs, bot_outputs,
         )
 
         emotion_dropdown.change(
