@@ -141,10 +141,9 @@ GENERATION_MAX_NEW_TOKENS = 256
 # ---------------------------------------------------------------------------
 # Steering
 # ---------------------------------------------------------------------------
-# Steering alphas aligned with Jeong (2026): 0.005-0.05 range.
-# Applied at ALL layers simultaneously, so effective perturbation is
-# alpha × num_layers spread across the network.
-STEERING_ALPHAS = [-0.02, -0.01, 0.0, 0.005, 0.01, 0.02, 0.05]
+# Steering alphas for all-layer steering. Surgical regime is 0.005-0.02;
+# alpha=0.05 causes repetitive collapse across all emotions.
+STEERING_ALPHAS = [-0.02, -0.01, -0.005, 0.0, 0.005, 0.01, 0.015, 0.02]
 
 # ---------------------------------------------------------------------------
 # Helpers

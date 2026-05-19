@@ -1,8 +1,8 @@
-# Emotion Vectors for Gemma 4
+# Emotion Vectors for Llama 3.1 8B
 
-Extract "emotion vectors" — linear directions in activation space corresponding to emotion concepts — from Google's Gemma 4 and validate them through linear probes and steering experiments.
+Extract "emotion vectors" — linear directions in activation space corresponding to emotion concepts — from Meta's Llama 3.1 8B and validate them through linear probes and steering experiments.
 
-This project replicates Part 1 of Anthropic's ["Emotion Concepts and their Function in a Large Language Model"](https://www.anthropic.com/research) (April 2026), adapted for an open-weight model.
+This project replicates Part 1 of Anthropic's ["Emotion Concepts and their Function in a Large Language Model"](https://transformer-circuits.pub/2026/emotions/index.html) (April 2026), adapted for an open-weight model.
 
 ## Methodology
 
@@ -17,17 +17,17 @@ Large language models develop internal representations of concepts, including em
 
 | Step | Script | What it does |
 |------|--------|-------------|
-| 1 | `01_generate_stories.py` | Prompt Gemma 4 to write short stories depicting each emotion |
+| 1 | `01_generate_stories.py` | Prompt Llama 3.1 8B to write short stories depicting each emotion |
 | 2 | `02_extract_activations.py` | Run stories through the model, capture mean residual-stream activations (token 50 onward) at target layers |
 | 3 | `03_compute_vectors.py` | Grand-mean subtraction, PCA confound removal, emotionality projection, unit normalisation |
 | 4 | `04_validate_probes.py` | Train linear probes (logistic regression) to classify emotions from activations |
-| 5 | `05_steer_and_eval.py` | Add norm-scaled emotion vectors to the residual stream during generation, evaluate with Gemma-as-judge |
+| 5 | `05_steer_and_eval.py` | Add norm-scaled emotion vectors to the residual stream during generation, evaluate with LLM-as-judge |
 
 ### Key adaptations from the Anthropic paper
 
-- **Model**: Gemma 4 31B (dense, 60 layers) instead of Claude Sonnet 4.5
-- **Emotions**: 10 high-signal emotions selected for steering power (not 171)
-- **Approach**: Mean-difference vectors only (no SAE training — no SAEs exist for Gemma 4)
+- **Model**: Llama 3.1 8B Instruct instead of Claude Sonnet 4.5
+- **Emotions**: 5 high-signal emotions selected for behavioral relevance to model self-awareness (not 171)
+- **Approach**: Mean-difference vectors only (no SAE training)
 - **Framework**: Direct PyTorch hooks on HuggingFace `transformers` (no TransformerLens)
 
 ### Activation extraction
@@ -44,17 +44,17 @@ The vector computation follows the paper's methodology with an additional correc
 4. **Emotionality direction projection** — project out the `grand_mean - neutral_mean` direction (see below)
 5. **Unit normalisation**
 
-### Adapting grand-mean subtraction to 10 emotions
+### Adapting grand-mean subtraction to 5 emotions
 
 The Anthropic paper computes emotion vectors by subtracting the **grand mean** (the average activation across all 171 emotions) from each emotion's mean activation. This isolates what makes each emotion *distinctive from other emotions*, rather than what makes it distinctive from emotionlessness.
 
-Naively replicating this with only 10 emotions introduces a problem: 7 of our 10 emotions are negative-valence (angry, afraid, sad, disgusted, anxious, hostile, frustrated), which skews the grand mean toward negative affect. Subtracting that skewed mean would bake a positive-valence bias into every vector, contaminating the directions we extract.
+Naively replicating this with only 5 emotions introduces a problem: 3 of our 5 emotions are negative-valence (angry, anxious, frustrated), which skews the grand mean toward negative affect. Subtracting that skewed mean would bake a positive-valence bias into every vector, contaminating the directions we extract.
 
 A simple neutral-baseline subtraction (`emotion_mean - neutral_mean`) avoids the skew but captures a different signal — it conflates emotion-specific information with shared "emotionality" (variance common to all emotions versus neutral text).
 
 We address this with a **two-step subtraction**:
 
-1. Compute the grand mean across all 10 emotion activation means
+1. Compute the grand mean across all 5 emotion activation means
 2. Compute each raw vector as `emotion_mean - grand_mean` (the paper's approach)
 3. Compute the shared emotionality direction: `grand_mean - neutral_mean`
 4. Project out that shared direction from each vector
@@ -64,16 +64,21 @@ Step 2 isolates what is unique to each emotion relative to the average emotion. 
 ### Emotion vocabulary
 
 ```
-angry, afraid, happy, sad, disgusted, excited, anxious, hostile, tender, frustrated
+frustrated, anxious, happy, angry, excited
 ```
 
-Selected for clear behavioural signatures and maximum separation — these produce the most observable changes under steering.
+Selected for behavioral relevance to model self-awareness:
+- **frustrated** — hallucination/shortcut risk
+- **anxious** — over-hedging, uncertainty
+- **happy** — healthy cooperative baseline
+- **angry** — adversarial drift
+- **excited** — sycophancy/overconfidence
 
 ### Layer targeting
 
-We capture activations at **global attention layers** near 25%, 50%, and 75% depth. Gemma 4 uses hybrid attention (sliding window + full global every 6 layers). Global attention layers have richer contextualised representations since they attend to the full sequence.
+We capture activations at layers near 25%, 50%, and 75% depth. Llama 3.1 8B has 32 layers, all using global attention (no hybrid/sliding window).
 
-For the 31B model (60 layers): layers **17, 29, 47**.
+Target layers: **8, 16, 24**.
 
 ### Steering normalisation
 
@@ -85,27 +90,29 @@ Following the paper (section 4), steering strengths (alpha values) are specified
 # Clone and enter the project
 cd emotion-vectors
 
-# Run the setup script
-bash setup.sh
-
-# Or manually:
+# Install dependencies
 pip install torch transformers accelerate scikit-learn numpy matplotlib seaborn tqdm jsonlines umap-learn
-huggingface-cli login  # needs access to google/gemma-4-31B-it
+
+# Required env vars
+export HF_HUB_CACHE=/root/hf_cache
+export HF_HUB_DISABLE_XET=1
 ```
 
-**Hardware requirements**: A100 80GB (recommended) or H100. The 31B model uses ~62GB in bfloat16. If VRAM is tight, edit `config.py` to use `google/gemma-4-E4B-it` (the 4B fallback, ~16GB).
+**Hardware requirements**: A40 48GB or L40 48GB sufficient (~16GB model in bf16 + room for activations). A100 80GB also works.
+
+**Model access**: The primary model ID (`meta-llama/Llama-3.1-8B-Instruct`) is gated and requires a HuggingFace license agreement. An ungated mirror (`NousResearch/Meta-Llama-3.1-8B-Instruct`) is configured as fallback in `config.py`.
 
 ## Running the pipeline
 
 ```bash
-# Quick test run (5 stories per emotion)
-python 01_generate_stories.py --num-stories 5
+# Quick test run (1 story per topic)
+python 01_generate_stories.py --num-stories 1
 python 02_extract_activations.py
 python 03_compute_vectors.py
 python 04_validate_probes.py
 python 05_steer_and_eval.py --skip-judge
 
-# Full run (50 stories per emotion)
+# Full run
 python 01_generate_stories.py
 python 02_extract_activations.py
 python 03_compute_vectors.py
@@ -125,15 +132,15 @@ After a full run, `outputs/` will contain:
 - `probe_results.json` — Probe accuracy and F1 scores per layer
 - `steered_responses.jsonl` — All generated responses at each steering strength
 - `steering_dose_response.png` — Target-emotion intensity vs steering strength
-- `judge_ratings.json` — Raw Gemma-as-judge ratings
+- `judge_ratings.json` — Raw LLM-as-judge ratings
 
 ## What to expect
 
 Based on the Anthropic paper's findings on Claude:
 
-- **Linear probes** should achieve 40–70%+ accuracy classifying emotions (well above the ~9% chance baseline for 11 classes)
-- **Similarity structure** should show semantically related emotions clustering (angry/hostile, happy/excited) and opposite-valence emotions separating
-- **Steering** should produce monotonically increasing target-emotion intensity as α grows, with visible qualitative shifts in generated text
+- **Linear probes** should achieve 40–70%+ accuracy classifying emotions (well above the ~17% chance baseline for 6 classes)
+- **Similarity structure** should show semantically related emotions clustering and opposite-valence emotions separating
+- **Steering** should produce monotonically increasing target-emotion intensity as alpha grows, with visible qualitative shifts in generated text
 
 ## Project structure
 
@@ -141,6 +148,7 @@ Based on the Anthropic paper's findings on Claude:
 emotion-vectors/
 ├── config.py                  # Hyperparameters, paths, model settings
 ├── emotions.json              # Emotion vocabulary with valence/arousal
+├── topics.md                  # 100 fixed scenario topics
 ├── 01_generate_stories.py     # Story generation
 ├── 02_extract_activations.py  # Activation extraction
 ├── 03_compute_vectors.py      # Vector computation and analysis
